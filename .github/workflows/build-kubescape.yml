@@ -1,0 +1,41 @@
+name: Build kubescape from a commit
+on:
+  push:
+    branches: [kubescape-build]
+permissions:
+  contents: write
+env:
+  KS_SHA: 7fdeb9db
+  TAG: kubescape-master-7fdeb9db
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: kubescape/kubescape
+          ref: ${{ env.KS_SHA }}
+          fetch-depth: 0
+          path: kubescape
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: kubescape/go.mod
+      - name: Build (as goreleaser does)
+        working-directory: kubescape
+        run: |
+          set -euo pipefail
+          git log -1 --format='%H %s'
+          git merge-base --is-ancestor $(git rev-parse a9ca4015) HEAD && echo "contains #3985 (a9ca4015)"
+          CGO_ENABLED=0 go build -ldflags "-X main.version=v4.0.16-master-${KS_SHA} -X main.commit=$(git rev-parse HEAD)" -o ../out/kubescape .
+          cp LICENSE README.md ../out/
+          ../out/kubescape version || true
+      - name: Publish as a prerelease asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tar -C out -czf kubescape_master_linux_amd64.tar.gz LICENSE README.md kubescape
+          sha256sum kubescape_master_linux_amd64.tar.gz
+          gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$TAG" kubescape_master_linux_amd64.tar.gz --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "kubescape master $KS_SHA (test build)" --notes "kubescape built from kubescape/kubescape@$KS_SHA (contains #3985) for testing lfn-cnti/testsuite against kubescape/kubescape#4103's fix. Not an official build."
