@@ -1,0 +1,15 @@
+---
+config_version: v2
+deployments:
+  helm_charts:
+    - name: strimzi-operator
+      helm_repo_name: strimzi
+      helm_repo_url: https://strimzi.io/charts/
+      helm_chart_name: strimzi-kafka-operator
+      chart_version: "1.3.0"
+      namespace: kafka
+      priority: 1
+  manifests:
+    - name: kafka-cluster
+      manifest_directory: manifests
+      priority: 2

@@ -1,0 +1,10 @@
+# A minimal PostgreSQL cluster: one instance, small volume.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: cnti-pg
+  namespace: cnpg
+spec:
+  instances: 1
+  storage:
+    size: 1Gi
