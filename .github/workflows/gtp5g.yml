@@ -1,0 +1,35 @@
+# Does free5gc/upf:v4.3.0 start with gtp5g v0.10.2 and v0.10.3?
+name: UPF vs gtp5g version
+on:
+  push:
+    branches: [gtp5g-check]
+permissions:
+  contents: read
+jobs:
+  upf:
+    strategy:
+      fail-fast: false
+      matrix:
+        gtp5g: [v0.10.2, v0.10.3]
+    name: gtp5g ${{ matrix.gtp5g }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build and load gtp5g ${{ matrix.gtp5g }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential "linux-headers-$(uname -r)"
+          git clone -q --depth 1 --branch ${{ matrix.gtp5g }} https://github.com/free5gc/gtp5g.git /tmp/gtp5g
+          make -C /tmp/gtp5g -j"$(nproc)" >/dev/null
+          sudo make -C /tmp/gtp5g install >/dev/null
+          sudo modprobe gtp5g
+          echo "kernel $(uname -r), module version $(cat /sys/module/gtp5g/version)"
+      - name: Start free5gc/upf:v4.3.0 with free5GC's sample config (v4.3.0)
+        run: |
+          set +e
+          I=free5gc/upf:v4.3.0
+          curl -fsSL -o /tmp/upfcfg.yaml https://raw.githubusercontent.com/free5gc/free5gc/v4.3.0/config/upfcfg.yaml || exit 1
+          docker run -d --name upf --privileged --network host -v /tmp/upfcfg.yaml:/free5gc/config/upfcfg.yaml:ro --entrypoint ./upf $I -c ./config/upfcfg.yaml
+          sleep 15
+          echo "state: $(docker inspect -f '{{.State.Status}} exit={{.State.ExitCode}}' upf)"
+          docker logs upf 2>&1 | grep -v "^\s" | tail -20
