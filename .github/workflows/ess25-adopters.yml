@@ -1,0 +1,120 @@
+# The four badge adopters, on their current main, against the 25-test
+# essential set (lfn-cnti/testsuite assess/essential-25, assessment only).
+# Setup per adopter as in lfn-cnti/testsuite .github/adopters.yml; the three
+# demoted tests run too, so one run gives the old 19-test and the new 25-test
+# score.
+name: Essential-25 on the badge adopters
+on:
+  push:
+    branches: [ess25-adopters]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  BINARY_URL: https://github.com/martin-mat/cnti-evidence-test/releases/download/ess25-30548a4e/cnti-testsuite-ess25-30548a4e.tar.gz
+jobs:
+  adopter:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: jitsi
+            display: Jitsi Meet
+            url: https://github.com/jitsi-contrib/jitsi-helm.git
+            cnf_config: .github/cnti/cnti-testsuite.yaml
+            kind_config: ""
+            install_timeout: "900"
+            op_timeout: ""
+            prepare: ""
+          - name: sdcore
+            display: Aether SD-Core
+            url: https://github.com/omec-project/sdcore-helm-charts.git
+            cnf_config: .github/cnti/cnti-testsuite.yaml
+            kind_config: .github/cnti/kind.yaml
+            install_timeout: "900"
+            op_timeout: "180"
+            prepare: |
+              helm repo add bitnami https://charts.bitnami.com/bitnami
+              helm dependency build 5g-control-plane
+              helm dependency build sdcore-helm-charts
+          - name: ocudu
+            display: OCUDU gNB
+            url: https://gitlab.com/ocudu/ocudu_elements/ocudu_helm.git
+            cnf_config: .gitlab/cnti/ocudu-gnb/cnti-testsuite.yaml
+            kind_config: ""
+            install_timeout: "900"
+            op_timeout: ""
+            prepare: ""
+          - name: free5gc
+            display: free5GC
+            url: https://github.com/free5gc/free5gc-helm.git
+            cnf_config: cnti-testsuite.yaml
+            kind_config: ci/kind-cnti.yaml
+            install_timeout: "1800"
+            op_timeout: "180"
+            # gtp5g pinned to v0.10.2: the UPF of free5GC v4.3.0 rejects
+            # v0.10.3 and panics (free5gc/free5gc#1212).
+            prepare: |
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq build-essential "linux-headers-$(uname -r)"
+              git clone --depth 1 --branch v0.10.2 https://github.com/free5gc/gtp5g.git /tmp/gtp5g
+              make -C /tmp/gtp5g -j"$(nproc)"
+              sudo make -C /tmp/gtp5g install
+              sudo modprobe gtp5g
+              lsmod | grep -q '^gtp5g'
+    name: ${{ matrix.display }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out the adopter's main
+        run: |
+          git clone --depth 1 ${{ matrix.url }} adopter
+          echo "commit: $(git -C adopter rev-parse --short HEAD)"
+      - name: Environment
+        if: matrix.op_timeout != ''
+        run: echo "CNTI_TESTSUITE_GENERIC_OPERATION_TIMEOUT=${{ matrix.op_timeout }}" >> "$GITHUB_ENV"
+      - name: Prepare as the adopter's job does
+        if: matrix.prepare != ''
+        working-directory: adopter
+        run: ${{ matrix.prepare }}
+      - uses: lfn-cnti/testsuite-action@dbdfeaeeee66bd7cbe44f63a1d5d57db5ac309c9 # main: binary_url is not in v1.2.0
+        with:
+          binary_url: ${{ env.BINARY_URL }}
+          cnf_config: adopter/${{ matrix.cnf_config }}
+          kind_config: ${{ matrix.kind_config != '' && format('adopter/{0}', matrix.kind_config) || '' }}
+          tests: cert specialized_init_system zombie_handled cpu_limits
+          install_timeout: ${{ matrix.install_timeout }}
+          fail_on_failure: "false"
+          artifact_name: results-${{ matrix.name }}
+  summary:
+    needs: adopter
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          path: results
+      - name: Old 19 and new 25
+        run: |
+          pip install -q pyyaml
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, os, yaml
+          kept = ["privileged_containers","non_root_containers","single_process_type","hostpath_mounts","hostport_not_used","selinux_options","sig_term_handled","liveness","readiness","increase_decrease_capacity","node_drain","memory_limits","container_sock_mounts","latest_tag","log_output","hardcoded_ip_addresses_in_k8s_runtime_configuration"]
+          demoted = ["specialized_init_system","zombie_handled","cpu_limits"]
+          added = ["host_network","host_pid_ipc_privileges","deprecated_k8s_features","alpha_k8s_apis","rolling_update","rollback","pod_owner","dedicated_service_account","resource_requests"]
+          old, new = kept + demoted, kept + added
+          print("| Adopter | Suite | Essential in results | Old 19 (pass at 15) | New 25 (pass at 20) | New set: not passed |")
+          print("|---|---|---|---|---|---|")
+          for d in sorted(glob.glob("results/results-*")):
+              files = sorted(f for f in glob.glob(d + "/**/*.yml", recursive=True) if not f.endswith("latest.yml"))
+              if not files:
+                  print(f"| {d.split('results-')[-1]} | no results | | | | |"); continue
+              doc = yaml.safe_load(open(files[-1]))
+              items = {i["name"]: i for i in doc.get("items", [])}
+              ess = sum(1 for i in items.values() if i.get("type") == "essential")
+              st = lambda n: items.get(n, {}).get("status", "not run")
+              o = sum(st(n) == "passed" for n in old); w = sum(st(n) == "passed" for n in new)
+              miss = ", ".join(f"`{n}` ({st(n)})" for n in new if st(n) != "passed")
+              print(f"| {d.split('results-')[-1]} | {doc.get('testsuite_version')} | {ess} | {o}/19 {'pass' if o >= 15 else 'fail'} | {w}/25 {'pass' if w >= 20 else 'fail'} | {miss} |")
+          PY
