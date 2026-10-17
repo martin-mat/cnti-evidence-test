@@ -1,0 +1,61 @@
+# Builds lfn-cnti/testsuite branch assess/essential-25 (the 25-test essential
+# set from lfn-cnti/testsuite#2550, assessment only) as a static binary and
+# publishes it as a release here, named after the commit, so any workflow can
+# run it with testsuite-action's binary_url. Then a smoke run on KEDA.
+name: Essential-25 build
+on:
+  push:
+    branches: [ess25-build]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lfn-cnti/testsuite
+          ref: assess/essential-25
+          path: testsuite
+          fetch-depth: 0
+      - name: Build static, as the release does
+        working-directory: testsuite
+        run: |
+          docker run --rm -v "$PWD":/workspace -w /workspace crystallang/crystal:1.19.1-alpine-build sh -c "\
+            git config --global --add safe.directory /workspace && \
+            shards install && \
+            crystal build src/cnti-testsuite.cr --release --static --link-flags '-lxml2 -llzma'"
+          ./cnti-testsuite version || true
+      - name: Publish
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(git -C testsuite rev-parse --short=8 HEAD)
+          tag="ess25-$sha"
+          name="cnti-testsuite-$tag.tar.gz"
+          tar -C testsuite -czf "$name" cnti-testsuite
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" "$name" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "Essential-25 assessment build $sha" \
+              --notes "lfn-cnti/testsuite assess/essential-25 at $sha: the 25-test essential set proposed in lfn-cnti/testsuite#2550, threshold 20. Assessment only."
+          echo "url=https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$name" >> "$GITHUB_OUTPUT"
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lfn-cnti/testsuite-action@dbdfeaeeee66bd7cbe44f63a1d5d57db5ac309c9 # main: binary_url is not in v1.2.0
+        with:
+          binary_url: ${{ needs.build.outputs.url }}
+          cnf_config: cnf/keda/cnti-testsuite.yaml
+          tests: cert
+          install_timeout: "900"
+          fail_on_failure: "false"
+          artifact_name: results-ess25-keda
