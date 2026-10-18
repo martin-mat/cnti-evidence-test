@@ -1,8 +1,9 @@
 # The four badge adopters, on their current main, against the 25-test
 # essential set (lfn-cnti/testsuite assess/essential-25, assessment only).
-# Setup per adopter as in lfn-cnti/testsuite .github/adopters.yml; the three
-# demoted tests run too, so one run gives the old 19-test and the new 25-test
-# score.
+# Setup per adopter as in lfn-cnti/testsuite .github/adopters.yml, from the
+# repository root as the adopters' own jobs run; the three demoted tests and
+# init_container_requests run too, so one run gives the old 19-test and the
+# new 25-test score.
 name: Essential-25 on the badge adopters
 on:
   push:
@@ -11,7 +12,7 @@ on:
 permissions:
   contents: read
 env:
-  BINARY_URL: https://github.com/martin-mat/cnti-evidence-test/releases/download/ess25-30548a4e/cnti-testsuite-ess25-30548a4e.tar.gz
+  BINARY_URL: https://github.com/martin-mat/cnti-evidence-test/releases/download/ess25-e223f29c/cnti-testsuite-ess25-e223f29c.tar.gz
 jobs:
   adopter:
     strategy:
@@ -68,21 +69,20 @@ jobs:
     steps:
       - name: Check out the adopter's main
         run: |
-          git clone --depth 1 ${{ matrix.url }} adopter
-          echo "commit: $(git -C adopter rev-parse --short HEAD)"
+          git clone --depth 1 ${{ matrix.url }} .
+          echo "commit: $(git rev-parse --short HEAD)"
       - name: Environment
         if: matrix.op_timeout != ''
         run: echo "CNTI_TESTSUITE_GENERIC_OPERATION_TIMEOUT=${{ matrix.op_timeout }}" >> "$GITHUB_ENV"
       - name: Prepare as the adopter's job does
         if: matrix.prepare != ''
-        working-directory: adopter
         run: ${{ matrix.prepare }}
       - uses: lfn-cnti/testsuite-action@dbdfeaeeee66bd7cbe44f63a1d5d57db5ac309c9 # main: binary_url is not in v1.2.0
         with:
           binary_url: ${{ env.BINARY_URL }}
-          cnf_config: adopter/${{ matrix.cnf_config }}
-          kind_config: ${{ matrix.kind_config != '' && format('adopter/{0}', matrix.kind_config) || '' }}
-          tests: cert specialized_init_system zombie_handled cpu_limits
+          cnf_config: ${{ matrix.cnf_config }}
+          kind_config: ${{ matrix.kind_config }}
+          tests: cert specialized_init_system zombie_handled cpu_limits init_container_requests
           install_timeout: ${{ matrix.install_timeout }}
           fail_on_failure: "false"
           artifact_name: results-${{ matrix.name }}
