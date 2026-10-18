@@ -1,0 +1,81 @@
+# The four CNFs with a proposed, not yet merged badge job, on their current
+# upstream branch with the CNTi config of their badge branch laid on top,
+# against the 25-test essential set (lfn-cnti/testsuite assess/essential-25,
+# assessment only). The three demoted tests and init_container_requests run
+# too, so one run gives the old 19-test and the new 25-test score.
+name: Essential-25 on the proposed badges
+on:
+  push:
+    branches: [ess25-proposed]
+permissions:
+  contents: read
+env:
+  BINARY_URL: https://github.com/martin-mat/cnti-evidence-test/releases/download/ess25-e223f29c/cnti-testsuite-ess25-e223f29c.tar.gz
+jobs:
+  cnf:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: coredns
+            display: CoreDNS
+            url: https://github.com/coredns/helm.git
+            ref: master
+            badge: https://github.com/martin-mat/coredns-helm-chart.git cnti-cert-badge
+            kind_config: ""
+            install_timeout: "900"
+            prepare: ""
+          - name: open5gs
+            display: Open5GS
+            url: https://github.com/Gradiant/5g-charts.git
+            ref: main
+            badge: https://github.com/martin-mat/5g-charts.git cnti-cert
+            kind_config: ""
+            install_timeout: "1200"
+            prepare: |
+              helm repo add bitnami https://charts.bitnami.com/bitnami
+              helm dependency build charts/open5gs
+          - name: eupf
+            display: eUPF
+            url: https://github.com/edgecomllc/eupf.git
+            ref: main
+            badge: https://github.com/martin-mat/eupf.git cnti-essential
+            kind_config: .github/cnti/kind.yaml
+            install_timeout: "900"
+            prepare: ""
+          - name: apisix
+            display: APISIX
+            url: https://github.com/apache/apisix-helm-chart.git
+            ref: master
+            badge: https://github.com/martin-mat/apisix-helm-chart.git ci/cnti-essential
+            kind_config: ""
+            install_timeout: "900"
+            prepare: |
+              helm repo add bitnami https://charts.bitnami.com/bitnami
+              helm repo add apisix https://apache.github.io/apisix-helm-chart
+              helm dependency build charts/apisix
+    name: ${{ matrix.display }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Upstream branch, with the badge branch's CNTi config
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch ${{ matrix.ref }} ${{ matrix.url }} .
+          echo "upstream ${{ matrix.ref }}: $(git rev-parse --short HEAD)"
+          set -- ${{ matrix.badge }}
+          git fetch -q --depth 1 "$1" "$2"
+          git checkout -q FETCH_HEAD -- .github/cnti
+          echo "badge config from $2: $(git rev-parse --short FETCH_HEAD)"; ls .github/cnti
+      - name: Prepare as the badge job does
+        if: matrix.prepare != ''
+        run: ${{ matrix.prepare }}
+      - uses: lfn-cnti/testsuite-action@dbdfeaeeee66bd7cbe44f63a1d5d57db5ac309c9 # main: binary_url is not in v1.2.0
+        with:
+          binary_url: ${{ env.BINARY_URL }}
+          cnf_config: .github/cnti/cnti-testsuite.yaml
+          kind_config: ${{ matrix.kind_config }}
+          tests: cert specialized_init_system zombie_handled cpu_limits init_container_requests
+          install_timeout: ${{ matrix.install_timeout }}
+          fail_on_failure: "false"
+          artifact_name: results-${{ matrix.name }}
