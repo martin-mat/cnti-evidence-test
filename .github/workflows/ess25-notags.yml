@@ -1,0 +1,69 @@
+# Experiment: the rollout tests on Jitsi and free5GC with their configured
+# rollout tags removed (in this job's clone only), so the tests take the
+# image's previous release from the registry (lfn-cnti/testsuite#2818).
+name: Essential-25 rollout tests without configured tags
+on:
+  push:
+    branches: [ess25-notags]
+permissions:
+  contents: read
+env:
+  BINARY_URL: https://github.com/martin-mat/cnti-evidence-test/releases/download/ess25-e223f29c/cnti-testsuite-ess25-e223f29c.tar.gz
+jobs:
+  adopter:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: jitsi
+            display: Jitsi Meet
+            url: https://github.com/jitsi-contrib/jitsi-helm.git
+            cnf_config: .github/cnti/cnti-testsuite.yaml
+            kind_config: ""
+            install_timeout: "900"
+            op_timeout: ""
+            prepare: ""
+          - name: free5gc
+            display: free5GC
+            url: https://github.com/free5gc/free5gc-helm.git
+            cnf_config: cnti-testsuite.yaml
+            kind_config: ci/kind-cnti.yaml
+            install_timeout: "1800"
+            op_timeout: "180"
+            # gtp5g pinned to v0.10.2 (free5gc/free5gc#1212).
+            prepare: |
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq build-essential "linux-headers-$(uname -r)"
+              git clone --depth 1 --branch v0.10.2 https://github.com/free5gc/gtp5g.git /tmp/gtp5g
+              make -C /tmp/gtp5g -j"$(nproc)"
+              sudo make -C /tmp/gtp5g install
+              sudo modprobe gtp5g
+              lsmod | grep -q '^gtp5g'
+    name: ${{ matrix.display }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Check out the adopter's main
+        run: |
+          git clone --depth 1 ${{ matrix.url }} .
+          echo "commit: $(git rev-parse --short HEAD)"
+      - name: Remove the configured rollout tags
+        run: |
+          echo "before:"; yq '.common.container_names' "${{ matrix.cnf_config }}"
+          yq -i 'del(.common.container_names)' "${{ matrix.cnf_config }}"
+          echo "after:"; yq '.common' "${{ matrix.cnf_config }}"
+      - name: Environment
+        if: matrix.op_timeout != ''
+        run: echo "CNTI_TESTSUITE_GENERIC_OPERATION_TIMEOUT=${{ matrix.op_timeout }}" >> "$GITHUB_ENV"
+      - name: Prepare as the adopter's job does
+        if: matrix.prepare != ''
+        run: ${{ matrix.prepare }}
+      - uses: lfn-cnti/testsuite-action@dbdfeaeeee66bd7cbe44f63a1d5d57db5ac309c9 # main: binary_url is not in v1.2.0
+        with:
+          binary_url: ${{ env.BINARY_URL }}
+          cnf_config: ${{ matrix.cnf_config }}
+          kind_config: ${{ matrix.kind_config }}
+          tests: rolling_update rolling_downgrade rolling_version_change rollback
+          install_timeout: ${{ matrix.install_timeout }}
+          fail_on_failure: "false"
+          artifact_name: results-${{ matrix.name }}
