@@ -1,0 +1,11 @@
+---
+config_version: "v2"
+deployments:
+  helm_charts:
+    - name: traefik
+      helm_repo_name: traefik
+      helm_repo_url: https://traefik.github.io/charts
+      helm_chart_name: traefik
+      chart_version: "42.0.0"
+      namespace: traefik-cnti
+      helm_values: --values cnf/traefik/values.yaml

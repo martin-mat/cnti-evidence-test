@@ -1,0 +1,15 @@
+crds:
+  enabled: true
+resources: &id001
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+webhook:
+  resources: *id001
+cainjector:
+  resources: *id001
+startupapicheck:
+  resources: *id001

@@ -1,0 +1,19 @@
+# The hostnames of the chart's quick setup (ci/fragments/quick-setup-hostnames.yaml),
+# the only values the chart requires.
+
+elementAdmin:
+  ingress:
+    host: admin.cnti.test
+elementWeb:
+  ingress:
+    host: chat.cnti.test
+matrixAuthenticationService:
+  ingress:
+    host: account.cnti.test
+matrixRTC:
+  ingress:
+    host: mrtc.cnti.test
+serverName: cnti.test
+synapse:
+  ingress:
+    host: matrix.cnti.test

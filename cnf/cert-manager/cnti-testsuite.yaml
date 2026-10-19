@@ -1,0 +1,9 @@
+---
+config_version: "v2"
+deployments:
+  helm_charts:
+    - name: cert-manager
+      registry_url: oci://quay.io/jetstack/charts/cert-manager
+      chart_version: v1.21.2
+      namespace: cert-manager
+      helm_values: --values cnf/cert-manager/values.yaml

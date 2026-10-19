@@ -1,0 +1,13 @@
+---
+config_version: v2
+deployments:
+  helm_charts:
+    - name: prometheus
+      helm_repo_name: prometheus-community
+      helm_repo_url: https://prometheus-community.github.io/helm-charts
+      helm_chart_name: prometheus
+      chart_version: "29.37.0"
+      namespace: prometheus
+      # Scope: the Prometheus server. The node exporter is a host-level DaemonSet;
+      # Alertmanager, kube-state-metrics and the Pushgateway are other components.
+      helm_values: --set alertmanager.enabled=false --set kube-state-metrics.enabled=false --set prometheus-node-exporter.enabled=false --set prometheus-pushgateway.enabled=false

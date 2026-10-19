@@ -1,0 +1,19 @@
+{
+  "a": [
+    {"name": "strimzi"}, {"name": "otel-collector"}, {"name": "valkey"}, {"name": "keda"},
+    {"name": "nats"}, {"name": "prometheus"}, {"name": "external-secrets"}
+  ],
+  "b": [
+    {"name": "mongodb-operator", "install_timeout": "900"},
+    {"name": "linkerd", "precluster": true, "kind_config": "cnf/linkerd/kind.yaml", "pre": "linkerd"},
+    {"name": "matrix", "install_timeout": "900"},
+    {"name": "rocketchat", "precluster": true, "pre": "rocketchat", "install_timeout": "900"},
+    {"name": "nextcloud", "install_timeout": "900"},
+    {"name": "envoy-gateway"}
+  ],
+  "c": [
+    {"name": "traefik"}, {"name": "external-dns"}, {"name": "haproxy"}, {"name": "cert-manager"},
+    {"name": "nginx-gateway-fabric", "precluster": true, "pre": "nginx-gateway-fabric"},
+    {"name": "livekit"}
+  ]
+}

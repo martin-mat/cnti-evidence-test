@@ -1,0 +1,11 @@
+---
+# CNTi Test Suite: the released matrix-stack chart (ESS Community) with its
+# defaults and the hostnames of the chart's quick setup.
+config_version: "v2"
+deployments:
+  helm_charts:
+    - name: ess
+      registry_url: oci://ghcr.io/element-hq/ess-helm/matrix-stack
+      chart_version: 26.10.0
+      namespace: ess
+      helm_values: --values cnf/matrix/values.yaml

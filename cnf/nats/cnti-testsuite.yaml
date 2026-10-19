@@ -1,0 +1,10 @@
+---
+config_version: v2
+deployments:
+  helm_charts:
+    - name: nats
+      helm_repo_name: nats
+      helm_repo_url: https://nats-io.github.io/k8s/helm/charts/
+      helm_chart_name: nats
+      chart_version: "2.15.1"
+      namespace: nats

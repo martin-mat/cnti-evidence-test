@@ -1,0 +1,78 @@
+# The 25-test essential set (lfn-cnti/testsuite assess/essential-25, assessment
+# only) on the campaign CNFs not yet measured with it, on chart defaults, in
+# three chunks: the branch ess25-rest-<chunk> runs chunks.json[<chunk>].
+# Configured rollout tags are removed, so the rollout tests take the image's
+# previous release from the registry. The three demoted tests and
+# init_container_requests run too, for the old 19-test score.
+name: Essential-25 on the remaining campaign CNFs
+on:
+  push:
+    branches: [ess25-rest-a, ess25-rest-b, ess25-rest-c]
+permissions:
+  contents: read
+env:
+  BINARY_URL: https://github.com/martin-mat/cnti-evidence-test/releases/download/ess25-e223f29c/cnti-testsuite-ess25-e223f29c.tar.gz
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        run: echo "matrix=$(jq -c --arg c "${GITHUB_REF_NAME##*-}" '.[$c]' chunks.json)" >> "$GITHUB_OUTPUT"
+  cnf:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Default kind config, as the action writes it
+        if: matrix.precluster && !matrix.kind_config
+        run: |
+          printf 'kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n  - role: control-plane\n  - role: worker\n  - role: worker\n' > "$RUNNER_TEMP/kind.yaml"
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        if: matrix.precluster
+        with:
+          cluster_name: cnti-testsuite
+          config: ${{ matrix.kind_config || format('{0}/kind.yaml', runner.temp) }}
+      - name: Linkerd identity certificates and Gateway API CRDs
+        if: matrix.pre == 'linkerd'
+        run: |
+          set -euo pipefail
+          d=cnf/linkerd/certs; mkdir -p "$d"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$d/ca.key" -out "$d/ca.crt" -days 2 \
+            -subj "/CN=root.linkerd.cluster.local" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign,cRLSign"
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$d/issuer.key" -out "$d/issuer.csr" -subj "/CN=identity.linkerd.cluster.local"
+          printf 'basicConstraints=critical,CA:TRUE,pathlen:0\nkeyUsage=critical,keyCertSign,cRLSign\n' > "$d/issuer.ext"
+          openssl x509 -req -in "$d/issuer.csr" -CA "$d/ca.crt" -CAkey "$d/ca.key" -CAcreateserial -out "$d/issuer.crt" -days 2 -extfile "$d/issuer.ext"
+          kubectl apply --server-side -f cnf/linkerd/gateway-api-crds/gateway-api.yaml
+      - name: MongoDB through MongoDB's operator (outside the CNF), as Rocket.Chat recommends
+        if: matrix.pre == 'rocketchat'
+        run: |
+          helm repo add mongodb https://mongodb.github.io/helm-charts
+          helm install mongodb-kubernetes-operator mongodb/mongodb-kubernetes -n mongodb --create-namespace --wait --timeout 10m
+          kubectl apply -f cnf/rocketchat/prereq-mongodb.yaml
+          for i in $(seq 1 90); do
+            phase=$(kubectl get mongodbcommunity mongodb -n mongodb -o jsonpath='{.status.phase}' 2>/dev/null || true)
+            [ "$phase" = Running ] && break; sleep 10
+          done
+          kubectl get pods -n mongodb; [ "$phase" = Running ]
+      - name: Gateway API CRDs for NGINX Gateway Fabric
+        if: matrix.pre == 'nginx-gateway-fabric'
+        run: kubectl kustomize "https://github.com/nginx/nginx-gateway-fabric/config/crd/gateway-api/standard?ref=v2.8.0" | kubectl apply -f -
+      - uses: lfn-cnti/testsuite-action@dbdfeaeeee66bd7cbe44f63a1d5d57db5ac309c9 # main: binary_url is not in v1.2.0
+        with:
+          binary_url: ${{ env.BINARY_URL }}
+          cnf_config: cnf/${{ matrix.name }}/cnti-testsuite.yaml
+          create_kind_cluster: ${{ matrix.precluster && 'false' || 'true' }}
+          tests: cert specialized_init_system zombie_handled cpu_limits init_container_requests
+          install_timeout: ${{ matrix.install_timeout || '900' }}
+          fail_on_failure: "false"
+          artifact_name: results-${{ matrix.name }}
