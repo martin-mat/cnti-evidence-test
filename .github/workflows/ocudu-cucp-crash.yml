@@ -1,0 +1,56 @@
+# Why the CU-CP and CU charts fail the CNTi job in ocudu_helm MR !90 on the
+# GitLab shared runners: the suite there (v2.2.0) prints no container log.
+# Each chart from the MR branch, suite v2.3.0 (prints the crashed container's
+# log), on a GitHub runner with the SCTP kernel module available and with it
+# blocked (install sctp /bin/false), as an A/B for the maintainers' guess.
+name: OCUDU CU-CP and CU from MR !90, SCTP available and blocked
+on:
+  push:
+    branches: [ocudu-cucp-crash]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  chart:
+    strategy:
+      fail-fast: false
+      matrix:
+        chart: [ocudu-cu-cp, ocudu-cu]
+        sctp: [available, blocked]
+    name: ${{ matrix.chart }}, sctp ${{ matrix.sctp }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out ocudu_helm at the MR !90 branch
+        run: |
+          git clone --depth 1 --branch cnti-cu-du-charts https://gitlab.com/ocudu/ocudu_elements/ocudu_helm.git .
+          echo "commit: $(git rev-parse --short HEAD)"
+      - name: SCTP module on the host
+        run: |
+          if [ "${{ matrix.sctp }}" = blocked ]; then
+            echo 'install sctp /bin/false' | sudo tee /etc/modprobe.d/no-sctp.conf
+            sudo modprobe -r sctp 2>/dev/null || true
+          else
+            sudo modprobe sctp
+          fi
+          echo "--- lsmod:"; lsmod | grep -E '^sctp' || echo "sctp not loaded"
+          echo "--- socket(AF_INET, SOCK_STREAM, IPPROTO_SCTP):"
+          python3 -c 'import socket; s=socket.socket(socket.AF_INET, socket.SOCK_STREAM, 132); print("ok")' || true
+      - uses: lfn-cnti/testsuite-action@dbdfeaeeee66bd7cbe44f63a1d5d57db5ac309c9 # main
+        with:
+          version: v2.3.0
+          cnf_config: .gitlab/cnti/${{ matrix.chart }}/cnti-testsuite.yaml
+          tests: cert
+          install_timeout: "600"
+          log_level: info
+          fail_on_failure: "false"
+          artifact_name: results-${{ matrix.chart }}-sctp-${{ matrix.sctp }}
+      - name: Pod state and container logs after the run
+        if: always()
+        run: |
+          kubectl get pods -n cnti-default -o wide || true
+          for p in $(kubectl get pods -n cnti-default -o name 2>/dev/null); do
+            echo "=== $p (current)"; kubectl logs -n cnti-default "$p" --all-containers --tail=80 || true
+            echo "=== $p (previous)"; kubectl logs -n cnti-default "$p" --all-containers --previous --tail=80 2>/dev/null || true
+          done
+          kubectl get events -n cnti-default --sort-by=.lastTimestamp | tail -30 || true
