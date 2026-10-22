@@ -1,0 +1,73 @@
+# Verifies lfn-cnti/testsuite#2837 (deprecated_k8s_features judges what the
+# CNF ships; read-back copies dry-run for their fields only) on two of the six
+# campaign CNFs that skipped the test: KEDA (a plain chart with discovered
+# CRDs) and the MongoDB operator example (owned workloads). Builds the PR
+# branch as a static binary, publishes it as a prerelease, runs the one test
+# on chart defaults.
+name: Verify testsuite PR 2837 on KEDA and the MongoDB operator
+on:
+  push:
+    branches: [verify-2809]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lfn-cnti/testsuite
+          ref: fix/deprecated-shipped-vs-readback
+          path: testsuite
+          fetch-depth: 0
+      - name: Build static, as the release does
+        working-directory: testsuite
+        run: |
+          docker run --rm -v "$PWD":/workspace -w /workspace crystallang/crystal:1.19.1-alpine-build sh -c "\
+            git config --global --add safe.directory /workspace && \
+            shards install && \
+            crystal build src/cnti-testsuite.cr --release --static --link-flags '-lxml2 -llzma'"
+          ./cnti-testsuite version || true
+      - name: Publish
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(git -C testsuite rev-parse --short=8 HEAD)
+          tag="dep2809-$sha"
+          name="cnti-testsuite-$tag.tar.gz"
+          tar -C testsuite -czf "$name" cnti-testsuite
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" "$name" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "testsuite PR 2837 build $sha" --notes "lfn-cnti/testsuite fix/deprecated-shipped-vs-readback at $sha, verification build."
+          echo "url=https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$name" >> "$GITHUB_OUTPUT"
+  cnf:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: keda
+            install_timeout: "600"
+          - name: mongodb-operator
+            install_timeout: "900"
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lfn-cnti/testsuite-action@dbdfeaeeee66bd7cbe44f63a1d5d57db5ac309c9 # main
+        with:
+          binary_url: ${{ needs.build.outputs.url }}
+          cnf_config: cnf/${{ matrix.name }}/cnti-testsuite.yaml
+          tests: deprecated_k8s_features
+          install_timeout: ${{ matrix.install_timeout }}
+          log_level: info
+          fail_on_failure: "false"
+          artifact_name: results-2809-${{ matrix.name }}
