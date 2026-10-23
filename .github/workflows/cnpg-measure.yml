@@ -1,0 +1,62 @@
+# Re-measures CloudNativePG (chart 0.29.1, operator 1.30.1, one-instance
+# Cluster) on chart defaults with the testsuite's main, which carries the fix
+# for lfn-cnti/testsuite#2808 (#2833: a Job an operator creates for its custom
+# resource is not a workload of the CNF). With suite v2.3.0 nine tests errored
+# on the initdb Job CloudNativePG deletes after it completes (run 38965962866).
+name: CloudNativePG on testsuite main
+on:
+  push:
+    branches: [cnpg-measure]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      url: ${{ steps.publish.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lfn-cnti/testsuite
+          ref: main
+          path: testsuite
+          fetch-depth: 0
+      - name: Build static, as the release does
+        working-directory: testsuite
+        run: |
+          docker run --rm -v "$PWD":/workspace -w /workspace crystallang/crystal:1.19.1-alpine-build sh -c "\
+            git config --global --add safe.directory /workspace && \
+            shards install && \
+            crystal build src/cnti-testsuite.cr --release --static --link-flags '-lxml2 -llzma'"
+          ./cnti-testsuite version || true
+      - name: Publish
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(git -C testsuite rev-parse --short=8 HEAD)
+          tag="main-$sha"
+          name="cnti-testsuite-$tag.tar.gz"
+          tar -C testsuite -czf "$name" cnti-testsuite
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" "$name" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "testsuite main build $sha" --notes "lfn-cnti/testsuite main at $sha, measurement build."
+          echo "url=https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$name" >> "$GITHUB_OUTPUT"
+  cloudnative-pg:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lfn-cnti/testsuite-action@aa0f295c1ad320e508f9de756e504c18f17079a7 # main
+        with:
+          binary_url: ${{ needs.build.outputs.url }}
+          cnf_config: cnf/cloudnative-pg/cnti-testsuite.yaml
+          tests: cert
+          log_level: info
+          fail_on_failure: "false"
+          artifact_name: results-cloudnative-pg
