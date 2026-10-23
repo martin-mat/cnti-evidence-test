@@ -1,0 +1,187 @@
+# Test of lfn-cnti/testsuite-action branch badge-name (efa57918): badge_name
+# puts the badge in <name>/ on badge_branch and keeps the rest of the branch.
+# Publishing only happens on the default branch, so the test runs here.
+name: testsuite-action badge_name test
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/badge-name-test.yml]
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  ACTION_SHA: efa57918dbb2d3231b2f5cdfb04038e6871095c9
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start without test branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for b in badges-name-test badges-root-test badges-invalid-test; do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$b" >/dev/null 2>&1 && echo "deleted $b" || true
+          done
+
+  # Five jobs publish to one branch at the same moment.
+  named:
+    needs: reset
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        name: [gnb, du, cu, cu-cp, cu-up]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lfn-cnti/testsuite-action
+          ref: ${{ env.ACTION_SHA }}
+          path: action
+      - name: A badge naming its CNF
+        run: |
+          mkdir ev
+          printf '{"schemaVersion":1,"label":"CNTi essential","message":"%s","color":"brightgreen"}\n' "${{ matrix.name }}" > ev/cnti-badge.json
+          printf '<svg xmlns="http://www.w3.org/2000/svg"><title>%s</title></svg>\n' "${{ matrix.name }}" > ev/cnti-badge.svg
+      - name: Publish
+        env:
+          BADGE_BRANCH: badges-name-test
+          BADGE_NAME: ${{ matrix.name }}
+          BADGE_SOURCE_DIR: ev
+          RUN_EXIT_CODE: "0"
+          GH_TOKEN: ${{ github.token }}
+        run: bash action/scripts/publish_badge.sh
+
+  verify-named:
+    needs: named
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every badge in its directory, one commit
+        run: |
+          set -euo pipefail
+          git clone -q --branch badges-name-test "https://github.com/$GITHUB_REPOSITORY" b && cd b
+          ls -R
+          test "$(git rev-list --count HEAD)" = 1
+          for n in gnb du cu cu-cp cu-up; do
+            test "$(jq -r .message "$n/cnti-badge.json")" = "$n"
+            grep -q "<title>$n</title>" "$n/cnti-badge.svg"
+          done
+          test "$(find . -path ./.git -prune -o -type f -print | wc -l)" = 10
+          echo "OK: 5 badges, 1 commit"
+
+  # A later run of one CNF replaces its badge and keeps the others.
+  republish:
+    needs: verify-named
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lfn-cnti/testsuite-action
+          ref: ${{ env.ACTION_SHA }}
+          path: action
+      - run: |
+          mkdir ev
+          printf '{"schemaVersion":1,"label":"CNTi essential","message":"gnb-2","color":"red"}\n' > ev/cnti-badge.json
+          printf '<svg xmlns="http://www.w3.org/2000/svg"><title>gnb-2</title></svg>\n' > ev/cnti-badge.svg
+      - name: Publish gnb again
+        env:
+          BADGE_BRANCH: badges-name-test
+          BADGE_NAME: gnb
+          BADGE_SOURCE_DIR: ev
+          RUN_EXIT_CODE: "1"
+          GH_TOKEN: ${{ github.token }}
+        run: bash action/scripts/publish_badge.sh
+      - name: gnb replaced, the others kept, one commit
+        run: |
+          set -euo pipefail
+          git clone -q --branch badges-name-test "https://github.com/$GITHUB_REPOSITORY" b && cd b
+          test "$(git rev-list --count HEAD)" = 1
+          test "$(jq -r .message gnb/cnti-badge.json)" = "gnb-2"
+          for n in du cu cu-cp cu-up; do test "$(jq -r .message "$n/cnti-badge.json")" = "$n"; done
+          echo "OK"
+
+  # Without badge_name: the branch is the badge, as before.
+  root:
+    needs: reset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lfn-cnti/testsuite-action
+          ref: ${{ env.ACTION_SHA }}
+          path: action
+      - run: |
+          mkdir ev
+          printf '{"schemaVersion":1,"label":"CNTi essential","message":"root","color":"brightgreen"}\n' > ev/cnti-badge.json
+          printf '<svg xmlns="http://www.w3.org/2000/svg"><title>root</title></svg>\n' > ev/cnti-badge.svg
+      - name: Publish twice without a name
+        env:
+          BADGE_BRANCH: badges-root-test
+          BADGE_SOURCE_DIR: ev
+          RUN_EXIT_CODE: "0"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash action/scripts/publish_badge.sh
+          bash action/scripts/publish_badge.sh
+      - name: Branch root holds the badge, one commit
+        run: |
+          set -euo pipefail
+          git clone -q --branch badges-root-test "https://github.com/$GITHUB_REPOSITORY" b && cd b
+          test "$(git rev-list --count HEAD)" = 1
+          test "$(ls | sort | tr '\n' ' ')" = "cnti-badge.json cnti-badge.svg "
+          echo "OK"
+
+  invalid:
+    needs: reset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: lfn-cnti/testsuite-action
+          ref: ${{ env.ACTION_SHA }}
+          path: action
+      - run: |
+          mkdir ev
+          printf '{"schemaVersion":1,"label":"CNTi essential","message":"x","color":"red"}\n' > ev/cnti-badge.json
+          printf '<svg/>\n' > ev/cnti-badge.svg
+      - name: A name with a path in it is refused
+        env:
+          BADGE_BRANCH: badges-invalid-test
+          BADGE_NAME: ../x
+          BADGE_SOURCE_DIR: ev
+          RUN_EXIT_CODE: "0"
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          out=$(bash action/scripts/publish_badge.sh)
+          echo "$out"
+          grep -q "badge_name '../x' may hold only" <<<"$out"
+          ! git ls-remote --exit-code "https://github.com/$GITHUB_REPOSITORY" refs/heads/badges-invalid-test
+          echo "OK: refused, nothing pushed"
+
+  # The real action, with the input, onto the shared branch.
+  e2e:
+    needs: republish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch example CNF
+        uses: actions/checkout@v4
+        with:
+          repository: lfn-cnti/testsuite
+          path: testsuite
+          sparse-checkout: example-cnfs/coredns
+      - name: Run action
+        uses: lfn-cnti/testsuite-action@efa57918dbb2d3231b2f5cdfb04038e6871095c9
+        with:
+          version: v2.3.0
+          cnf_config: testsuite/example-cnfs/coredns/cnti-testsuite.yaml
+          fail_on_failure: false
+          badge_branch: badges-name-test
+          badge_name: coredns
+      - name: coredns added, the five kept, one commit
+        run: |
+          set -euo pipefail
+          git clone -q --branch badges-name-test "https://github.com/$GITHUB_REPOSITORY" b && cd b
+          ls
+          test "$(git rev-list --count HEAD)" = 1
+          jq . coredns/cnti-badge.json
+          for n in gnb du cu cu-cp cu-up coredns; do test -f "$n/cnti-badge.svg" && test -f "$n/cnti-badge.json"; done
+          curl -sfI "https://github.com/$GITHUB_REPOSITORY/raw/badges-name-test/coredns/cnti-badge.svg" | head -1
+          echo "OK"
