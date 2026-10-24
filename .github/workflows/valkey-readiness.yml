@@ -1,0 +1,133 @@
+# valkey-io/valkey-helm: readinessProbe.enabled defaulting to true
+# (martin-mat/valkey-helm branch readiness-default) against upstream main.
+#  cnti:      CNTi essential (cert) on chart defaults, main vs fix
+#  behaviour: upgrade main -> fix; replication: a replica that stops answering
+#             leaves valkey-read and comes back; Sentinel example becomes Ready
+name: Valkey readiness default
+on:
+  push:
+    branches: [valkey-readiness]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  FIX_REPO: martin-mat/valkey-helm
+  FIX_REF: readiness-default
+jobs:
+  cnti:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: main
+            repo: valkey-io/valkey-helm
+            ref: main
+          - name: fix
+            repo: martin-mat/valkey-helm
+            ref: readiness-default
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: chart
+      - name: CNF config (chart defaults)
+        run: |
+          cat > cnti-testsuite.yaml <<CFG
+          ---
+          config_version: v2
+          deployments:
+            helm_dirs:
+              - name: valkey
+                helm_directory: $GITHUB_WORKSPACE/chart/valkey
+                namespace: valkey
+          CFG
+          git -C chart log -1 --format='chart %h %s'
+          grep -n -A1 '^readinessProbe:' chart/valkey/values.yaml
+      - id: cnti
+        uses: lfn-cnti/testsuite-action@v1
+        with:
+          cnf_config: cnti-testsuite.yaml
+          tests: cert
+          fail_on_failure: "false"
+          artifact_name: results-${{ matrix.name }}
+      - name: Summary
+        if: always()
+        env:
+          RESULTS: ${{ steps.cnti.outputs.results_file }}
+        run: |
+          f="$RESULTS"; [ -f "$f" ] || f=$(ls -t results/*.yml 2>/dev/null | head -1)
+          echo "${{ matrix.name }}: essential ${{ steps.cnti.outputs.essential_passed }}/${{ steps.cnti.outputs.essential_max_passed }}" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ -n "$f" ] && yq -r '.items[] | select(.name=="readiness" or .name=="liveness") | "  \(.name): \(.status)"' "$f" | tee -a "$GITHUB_STEP_SUMMARY" || echo "no results file"
+          [ -n "$f" ] && yq -r '.items[] | select(.status=="failed") | "  failed: \(.name)"' "$f" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  behaviour:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: valkey-io/valkey-helm
+          ref: main
+          path: main
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FIX_REPO }}
+          ref: ${{ env.FIX_REF }}
+          path: fix
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: valkey
+      - name: Upgrade from main to the fix (standalone defaults)
+        run: |
+          set -euo pipefail
+          helm install up ./main/valkey -n up --create-namespace --wait --timeout 5m
+          kubectl -n up get deploy up-valkey -o jsonpath='{.spec.template.spec.containers[0].readinessProbe}'; echo " <- main readinessProbe (expect empty)"
+          helm upgrade up ./fix/valkey -n up --wait --timeout 5m
+          kubectl -n up rollout status deploy/up-valkey --timeout=3m
+          kubectl -n up get deploy up-valkey -o jsonpath='{.spec.template.spec.containers[0].readinessProbe.exec.command[2]}'; echo
+          kubectl -n up get pods -o wide
+          kubectl -n up exec deploy/up-valkey -c valkey -- valkey-cli ping
+          echo "UPGRADE OK" >> "$GITHUB_STEP_SUMMARY"
+      - name: Replication, a replica that stops answering leaves valkey-read
+        run: |
+          set -euo pipefail
+          ns=rep
+          # Liveness gets a longer window here, so the readiness effect is seen
+          # before a restart; DEBUG is enabled only to freeze one replica.
+          helm install rep ./fix/valkey -n $ns --create-namespace --wait --timeout 8m \
+            --set replica.enabled=true --set replica.replicas=3 \
+            --set persistence.enabled=true --set persistence.size=1Gi \
+            --set livenessProbe.failureThreshold=12 \
+            --set-string extraConfig='enable-debug-command yes'
+          kubectl -n $ns get pods,svc -o wide
+          read_svc=$(kubectl -n $ns get svc -l app.kubernetes.io/component=read -o jsonpath='{.items[0].metadata.name}')
+          eps() { kubectl -n $ns get endpointslices -l kubernetes.io/service-name=$read_svc -o json | jq '[.items[].endpoints[]? | select(.conditions.ready==true)] | length'; }
+          echo "ready endpoints of $read_svc: $(eps)"; [ "$(eps)" = 3 ]
+          pod=$(kubectl -n $ns get pods -l app.kubernetes.io/component=valkey -o name | sort | tail -1)
+          echo "freezing $pod for 70 s"
+          kubectl -n $ns exec ${pod#pod/} -c valkey -- valkey-cli debug sleep 70 >/dev/null 2>&1 &
+          dropped=""
+          for i in $(seq 1 30); do sleep 2; n=$(eps); r=$(kubectl -n $ns get ${pod} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'); echo "t=$((i*2))s ready_endpoints=$n $pod Ready=$r"; if [ "$n" = 2 ] && [ "$r" = False ]; then dropped=$((i*2)); break; fi; done
+          [ -n "$dropped" ] || { echo "replica never left the read service"; exit 1; }
+          back=""
+          for i in $(seq 1 60); do sleep 2; n=$(eps); if [ "$n" = 3 ]; then back=$((i*2)); break; fi; done
+          [ -n "$back" ] || { echo "replica never came back"; exit 1; }
+          restarts=$(kubectl -n $ns get ${pod} -o jsonpath='{.status.containerStatuses[?(@.name=="valkey")].restartCount}')
+          echo "REPLICATION OK: frozen replica left valkey-read after ${dropped}s, back ${back}s later, restarts=$restarts" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Sentinel example becomes Ready
+        run: |
+          set -euo pipefail
+          helm install ha ./fix/valkey -n ha --create-namespace -f ./fix/valkey/examples/ha-sentinel.yaml \
+            --set persistence.enabled=true --set persistence.size=1Gi --wait --timeout 10m
+          kubectl -n ha get pods -o wide
+          not_ready=$(kubectl -n ha get pods -o json | jq '[.items[] | select(([.status.conditions[]? | select(.type=="Ready" and .status=="True")] | length) == 0)] | length')
+          [ "$not_ready" = 0 ]
+          echo "SENTINEL OK: $(kubectl -n ha get pods --no-headers | wc -l) pods Ready" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl get pods -A -o wide
+          for ns in up rep ha; do kubectl -n $ns describe pods 2>/dev/null | tail -60; done
