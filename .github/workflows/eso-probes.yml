@@ -1,0 +1,149 @@
+# external-secrets/external-secrets chart: liveness on all three components and
+# readiness on the controller by default (martin-mat/external-secrets branch
+# chart-probes-default), against upstream main, and together with PR #7137
+# (runAsGroup, martin-mat branch fix/run-as-group).
+name: ESO probes default
+on:
+  push:
+    branches: [eso-probes]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cnti:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: main
+            repo: external-secrets/external-secrets
+            ref: main
+            merge: ""
+          - name: fix
+            repo: martin-mat/external-secrets
+            ref: chart-probes-default
+            merge: ""
+          - name: fix-and-7137
+            repo: martin-mat/external-secrets
+            ref: chart-probes-default
+            merge: fix/run-as-group
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          ref: ${{ matrix.ref }}
+          path: eso
+          fetch-depth: 0
+      - name: Merge PR #7137 branch
+        if: matrix.merge != ''
+        working-directory: eso
+        run: |
+          git -c user.email=ci@example.com -c user.name=ci fetch -q https://github.com/martin-mat/external-secrets "${{ matrix.merge }}"
+          git -c user.email=ci@example.com -c user.name=ci merge --no-edit FETCH_HEAD
+      - name: Generate CRDs and dependencies, CNF config
+        working-directory: eso
+        run: |
+          set -euo pipefail
+          ./hack/helm.generate.sh deploy/crds deploy/charts/external-secrets
+          helm dependency build deploy/charts/external-secrets
+          git log -2 --format='%h %s'
+          grep -n -A2 '^livenessProbe:\|^readinessProbe:' deploy/charts/external-secrets/values.yaml | grep enabled
+          cat > ../cnti-testsuite.yaml <<CFG
+          ---
+          config_version: v2
+          deployments:
+            helm_dirs:
+              - name: external-secrets
+                helm_directory: $GITHUB_WORKSPACE/eso/deploy/charts/external-secrets
+                namespace: external-secrets
+          CFG
+      - id: cnti
+        uses: lfn-cnti/testsuite-action@v1
+        with:
+          cnf_config: cnti-testsuite.yaml
+          tests: cert
+          fail_on_failure: "false"
+          artifact_name: results-${{ matrix.name }}
+      - name: Summary
+        if: always()
+        run: |
+          echo "${{ matrix.name }}: essential ${{ steps.cnti.outputs.essential_passed }}/${{ steps.cnti.outputs.essential_max_passed }}" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  behaviour:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: external-secrets/external-secrets
+          ref: main
+          path: main
+      - uses: actions/checkout@v4
+        with:
+          repository: martin-mat/external-secrets
+          ref: chart-probes-default
+          path: fix
+      - name: Generate charts
+        run: |
+          set -euo pipefail
+          for d in main fix; do (cd $d && ./hack/helm.generate.sh deploy/crds deploy/charts/external-secrets && helm dependency build deploy/charts/external-secrets >/dev/null); done
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: eso
+      - name: Install main, sync a secret from the fake provider
+        run: |
+          set -euo pipefail
+          helm install eso ./main/deploy/charts/external-secrets -n external-secrets --create-namespace --wait --timeout 5m
+          cat <<'YAML' | kubectl apply -f -
+          apiVersion: external-secrets.io/v1
+          kind: SecretStore
+          metadata: {name: fake, namespace: default}
+          spec:
+            provider:
+              fake:
+                data:
+                  - key: /app/password
+                    value: first
+          ---
+          apiVersion: external-secrets.io/v1
+          kind: ExternalSecret
+          metadata: {name: app, namespace: default}
+          spec:
+            refreshInterval: 10s
+            secretStoreRef: {name: fake, kind: SecretStore}
+            target: {name: app}
+            data:
+              - secretKey: password
+                remoteRef: {key: /app/password}
+          YAML
+          kubectl wait externalsecret/app --for=condition=Ready --timeout=2m
+          test "$(kubectl get secret app -o jsonpath='{.data.password}' | base64 -d)" = first
+          echo "main: secret synced"
+      - name: Upgrade to the fix
+        run: |
+          set -euo pipefail
+          helm upgrade eso ./fix/deploy/charts/external-secrets -n external-secrets --wait --timeout 5m
+          for d in external-secrets external-secrets-webhook external-secrets-cert-controller; do
+            kubectl -n external-secrets rollout status deploy/eso-$d --timeout=3m 2>/dev/null || kubectl -n external-secrets rollout status deploy/$d --timeout=3m
+          done
+          kubectl -n external-secrets get deploy -o json | jq -r '.items[] | "\(.metadata.name): liveness=\(.spec.template.spec.containers[0].livenessProbe.httpGet.path // "none") readiness=\(.spec.template.spec.containers[0].readinessProbe.httpGet.path // "none")"'
+          echo "UPGRADE OK" >> "$GITHUB_STEP_SUMMARY"
+      - name: Probes stay green, secrets keep syncing
+        run: |
+          set -euo pipefail
+          sleep 180
+          kubectl -n external-secrets get pods -o wide
+          restarts=$(kubectl -n external-secrets get pods -o json | jq '[.items[].status.containerStatuses[].restartCount] | add')
+          notready=$(kubectl -n external-secrets get pods -o json | jq '[.items[] | select(([.status.conditions[]? | select(.type=="Ready" and .status=="True")] | length) == 0)] | length')
+          kubectl -n external-secrets get events --field-selector reason=Unhealthy -o custom-columns=OBJ:.involvedObject.name,MSG:.message --no-headers || true
+          kubectl patch secretstore fake --type=json -p '[{"op":"replace","path":"/spec/provider/fake/data/0/value","value":"second"}]'
+          for i in $(seq 1 30); do v=$(kubectl get secret app -o jsonpath='{.data.password}' | base64 -d); [ "$v" = second ] && break; sleep 2; done
+          echo "after 3 min: restarts=$restarts not_ready_pods=$notready secret=$v" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ "$restarts" = 0 ] && [ "$notready" = 0 ] && [ "$v" = second ]
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl -n external-secrets describe pods | tail -80
+          kubectl -n external-secrets logs deploy/eso-external-secrets --tail=50 || true
