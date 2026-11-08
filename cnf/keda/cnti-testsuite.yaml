@@ -1,0 +1,10 @@
+# The keda chart as published (2.21.0, the version on kedacore/charts main), with its defaults.
+config_version: "v2"
+deployments:
+  helm_charts:
+    - name: keda
+      helm_repo_name: kedacore
+      helm_repo_url: https://kedacore.github.io/charts
+      helm_chart_name: keda
+      chart_version: "2.21.0"
+      namespace: keda
