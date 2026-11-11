@@ -1,0 +1,90 @@
+# The CNTi essential tests on Ella Core's Kubernetes manifests as they ship
+# (ellanetworks/core main, k8s/): one measurement, not a badge.
+#
+# What their install guide asks of the cluster, on kind:
+# - Multus, and the macvlan, static and tuning CNI plugins on every node;
+# - the host interface the RAN attachment's macvlan uses, eth1: a Docker
+#   network connected to every kind node gives each one;
+# - storage that follows the pod, so node_drain can move the StatefulSet's
+#   volume: kind's local-path provisioner in its shared mode.
+# The manifests are a kustomization; kubectl kustomize renders them into the
+# one file the suite applies. Nothing in them is changed.
+name: Ella Core measure
+on:
+  push:
+    branches: [ella-core-measure]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  essential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      MULTUS_VERSION: v4.3.2
+      CNI_PLUGINS_VERSION: v1.9.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ellanetworks/core
+          ref: main
+          path: ella
+          persist-credentials: false
+      - name: Ella Core commit
+        run: git -C ella log -1 --format='%H %cs %s'
+
+      - name: Create the cluster
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/kind-shared-storage
+          kind create cluster --name cnti-testsuite --config cnf/ella-core/kind.yaml
+          # eth1 on every node, for the RAN attachment's macvlan.
+          docker network create --subnet 172.30.0.0/24 ella-ran
+          for node in $(kind get nodes --name cnti-testsuite); do
+            docker network connect ella-ran "$node"
+            docker exec "$node" ip -br addr show eth1
+          done
+          # The CNI plugins the attachment uses, on every node.
+          curl -sSfL --retry 3 -o /tmp/cni-plugins.tgz \
+            "https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-${CNI_PLUGINS_VERSION}.tgz"
+          mkdir -p /tmp/cni && tar -xzf /tmp/cni-plugins.tgz -C /tmp/cni ./macvlan ./static ./tuning
+          for node in $(kind get nodes --name cnti-testsuite); do
+            for plugin in macvlan static tuning; do docker cp "/tmp/cni/$plugin" "$node:/opt/cni/bin/$plugin"; done
+          done
+          # Storage that follows the pod.
+          kubectl -n local-path-storage patch configmap local-path-config --type merge \
+            -p '{"data":{"config.json":"{\"nodePathMap\":[],\"sharedFileSystemPath\":\"/var/local-path-provisioner\"}"}}'
+          kubectl -n local-path-storage rollout restart deployment local-path-provisioner
+          kubectl -n local-path-storage rollout status deployment local-path-provisioner --timeout 2m
+          # Multus.
+          kubectl apply -f "https://raw.githubusercontent.com/k8snetworkplumbingwg/multus-cni/${MULTUS_VERSION}/deployments/multus-daemonset-thick.yml"
+          kubectl -n kube-system rollout status daemonset kube-multus-ds --timeout 5m
+          kubectl get nodes -o wide
+
+      - name: Render the manifests
+        run: |
+          set -euo pipefail
+          mkdir -p cnf/ella-core/rendered
+          kubectl kustomize ella/k8s > cnf/ella-core/rendered/ella-core.yaml
+          grep -E '^kind:' cnf/ella-core/rendered/ella-core.yaml
+
+      - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
+        with:
+          version: v2.4.1
+          cnf_config: cnf/ella-core/cnti-testsuite.yaml
+          create_kind_cluster: false
+          install_timeout: 600
+          tests: cert
+          fail_on_failure: "false"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          set +e
+          kubectl get pods -A -o wide
+          kubectl -n ella describe pods | tail -80
+          kubectl -n ella logs statefulset/ella-core --tail=100
+          kubectl -n ella get events --sort-by=.lastTimestamp | tail -40
