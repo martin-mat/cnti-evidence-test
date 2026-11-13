@@ -1,0 +1,77 @@
+# The CNTi essential tests on Routr 3's chart (fonoster/routr, branch v3):
+# - routr-v3: the chart as it is on v3, whose appVersion still names the
+#   Routr 2 images (2.32.2);
+# - routr-v3-alpha: the same chart at tag v3.0.0-alpha.6 (v3's head) with its
+#   appVersion set to the alpha, as the alpha charts are built, so every
+#   Routr image is the Go 3.0.0-alpha.6 one.
+# Storage that follows the pod, so node_drain can move the StatefulSets'
+# volumes: kind's local-path provisioner in shared mode.
+name: Routr v3 measure
+on:
+  push:
+    branches: [telco-candidates-measure]
+    paths: [.github/workflows/routr-v3-measure.yml, cnf/routr-v3/**, cnf/routr-v3-alpha/**]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  essential:
+    name: essential (${{ matrix.cnf }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cnf: routr-v3
+            ref: v3
+            app_version: ""
+          - cnf: routr-v3-alpha
+            ref: v3.0.0-alpha.6
+            app_version: 3.0.0-alpha.6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: fonoster/routr
+          ref: ${{ matrix.ref }}
+          path: cnf/${{ matrix.cnf }}/src
+          persist-credentials: false
+      - name: Chart commit
+        run: |
+          git -C cnf/${{ matrix.cnf }}/src log -1 --format='%H %cs %s'
+          if [ -n "${{ matrix.app_version }}" ]; then
+            sed -i 's/^appVersion: .*/appVersion: ${{ matrix.app_version }}/' cnf/${{ matrix.cnf }}/src/ops/charts/connect/Chart.yaml
+          fi
+          grep -E '^(version|appVersion)' cnf/${{ matrix.cnf }}/src/ops/charts/connect/Chart.yaml
+
+      - name: Create the cluster
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/kind-shared-storage
+          kind create cluster --name cnti-testsuite --config cnf/telco/kind.yaml
+          kubectl -n local-path-storage patch configmap local-path-config --type merge \
+            -p '{"data":{"config.json":"{\"nodePathMap\":[],\"sharedFileSystemPath\":\"/var/local-path-provisioner\"}"}}'
+          kubectl -n local-path-storage rollout restart deployment local-path-provisioner
+          kubectl -n local-path-storage rollout status deployment local-path-provisioner --timeout 2m
+          kubectl get nodes -o wide
+
+      - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
+        with:
+          version: v2.4.1
+          cnf_config: cnf/${{ matrix.cnf }}/cnti-testsuite.yaml
+          create_kind_cluster: false
+          install_timeout: 900
+          tests: cert
+          fail_on_failure: "false"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          set +e
+          kubectl get pods -A -o wide
+          kubectl get pvc -A
+          kubectl -n routr describe pods | tail -120
+          kubectl -n routr get events --sort-by=.lastTimestamp | tail -40
