@@ -1,0 +1,7 @@
+# SigScale CSE (sigscale/cse-helm main) on its chart defaults.
+config_version: "v2"
+deployments:
+  helm_dirs:
+    - name: sigscale-cse
+      helm_directory: src/sigscale-cse
+      namespace: sigscale-cse

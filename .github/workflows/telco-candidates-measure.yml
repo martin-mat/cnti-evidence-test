@@ -1,0 +1,73 @@
+# The CNTi essential tests on three telco candidates' Helm charts as they ship,
+# each from its own repository's main: one measurement each, not a badge.
+# - Routr Connect (fonoster/routr, ops/charts/connect): SIP proxy, registrar
+#   and location server.
+# - SigScale OCS, CGF and CSE (sigscale/ocs-helm, cgf-helm, cse-helm): 3GPP
+#   online charging, charging gateway and CAMEL service environment.
+# The only cluster setup is storage that follows the pod, so node_drain can
+# move a StatefulSet's volume: kind's local-path provisioner in shared mode.
+name: Telco candidates measure
+on:
+  push:
+    branches: [telco-candidates-measure]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  essential:
+    name: essential (${{ matrix.cnf }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cnf: routr
+            repo: fonoster/routr
+          - cnf: sigscale-ocs
+            repo: sigscale/ocs-helm
+          - cnf: sigscale-cgf
+            repo: sigscale/cgf-helm
+          - cnf: sigscale-cse
+            repo: sigscale/cse-helm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ matrix.repo }}
+          path: cnf/${{ matrix.cnf }}/src
+          persist-credentials: false
+      - name: Chart commit
+        run: git -C cnf/${{ matrix.cnf }}/src log -1 --format='%H %cs %s'
+
+      - name: Create the cluster
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/kind-shared-storage
+          kind create cluster --name cnti-testsuite --config cnf/telco/kind.yaml
+          kubectl -n local-path-storage patch configmap local-path-config --type merge \
+            -p '{"data":{"config.json":"{\"nodePathMap\":[],\"sharedFileSystemPath\":\"/var/local-path-provisioner\"}"}}'
+          kubectl -n local-path-storage rollout restart deployment local-path-provisioner
+          kubectl -n local-path-storage rollout status deployment local-path-provisioner --timeout 2m
+          kubectl get nodes -o wide
+
+      - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
+        with:
+          version: v2.4.1
+          cnf_config: cnf/${{ matrix.cnf }}/cnti-testsuite.yaml
+          create_kind_cluster: false
+          install_timeout: 900
+          tests: cert
+          fail_on_failure: "false"
+
+      - name: Diagnostics
+        if: always()
+        run: |
+          set +e
+          kubectl get pods -A -o wide
+          kubectl get pvc -A
+          ns=${{ matrix.cnf }}
+          kubectl -n "$ns" describe pods | tail -120
+          kubectl -n "$ns" get events --sort-by=.lastTimestamp | tail -40

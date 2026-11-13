@@ -1,0 +1,18 @@
+# One control plane and two workers, as the action's default, with one host
+# directory mounted into every node for kind's storage provisioner in its
+# shared mode, so a StatefulSet's volume follows its pod when node_drain moves it.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraMounts:
+      - hostPath: /tmp/kind-shared-storage
+        containerPath: /var/local-path-provisioner
+  - role: worker
+    extraMounts:
+      - hostPath: /tmp/kind-shared-storage
+        containerPath: /var/local-path-provisioner
+  - role: worker
+    extraMounts:
+      - hostPath: /tmp/kind-shared-storage
+        containerPath: /var/local-path-provisioner

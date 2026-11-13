@@ -1,0 +1,7 @@
+# SigScale CGF (sigscale/cgf-helm main) on its chart defaults.
+config_version: "v2"
+deployments:
+  helm_dirs:
+    - name: sigscale-cgf
+      helm_directory: src/sigscale-cgf
+      namespace: sigscale-cgf
