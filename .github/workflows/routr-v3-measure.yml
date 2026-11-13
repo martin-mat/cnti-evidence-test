@@ -66,6 +66,21 @@ jobs:
           kubectl -n local-path-storage rollout status deployment local-path-provisioner --timeout 2m
           kubectl get nodes -o wide
 
+      - name: Install check (fixes only)
+        if: matrix.cnf == 'routr-v3-fixes'
+        run: |
+          set +e
+          helm install routr cnf/${{ matrix.cnf }}/src/ops/charts/connect -n routr --create-namespace --timeout 6m --wait --wait-for-jobs
+          echo "helm exit $?"
+          kubectl -n routr get pods -o wide
+          for p in $(kubectl -n routr get pods -o name); do
+            echo "== $p"; kubectl -n routr logs "$p" --all-containers --tail=30 --prefix
+            kubectl -n routr get "$p" -o jsonpath='{range .status.containerStatuses[*]}{.name} restarts={.restartCount} {.lastState}{"\n"}{end}'
+          done
+          kubectl -n routr get events --sort-by=.lastTimestamp | tail -30
+          helm uninstall routr -n routr --wait --timeout 3m
+          kubectl delete namespace routr --wait --timeout 3m
+
       - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
         with:
           version: v2.4.1
