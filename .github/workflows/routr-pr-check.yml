@@ -1,0 +1,126 @@
+# Checks a Routr pull request branch before it is opened upstream:
+# - go and docs-format: fonoster/routr's own Tests jobs of the same names
+#   (.github/workflows/test.yaml on v3), copied as they are, on the branch;
+# - readiness: the CNTi readiness test on the chart installed from the branch,
+#   with appVersion 3.0.0-alpha.6 as the alpha charts are built.
+name: Routr PR check
+on:
+  push:
+    branches: [telco-candidates-measure]
+    paths: [.github/workflows/routr-pr-check.yml, cnf/routr-pr/**]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  REPO: martin-mat/routr
+  REF: chart-readiness-probes
+jobs:
+  go:
+    name: Go (their job)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: routr
+          POSTGRES_PASSWORD: routr
+          POSTGRES_DB: routr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U routr -d routr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgres://routr:routr@localhost:5432/routr
+      TEST_REDIS_URL: redis://localhost:6379
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO }}
+          ref: ${{ env.REF }}
+          persist-credentials: false
+      - name: Branch commit
+        run: git log -1 --format='%H %s'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            pkg/processor/go.sum
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - name: Apply the migrations
+        run: |
+          for f in $(ls ops/pgdata-migrations/migrations/*/migration.sql | sort); do
+            echo "applying $(basename "$(dirname "$f")")"
+            psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      - name: Format, vet and test
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "::error::gofmt"; exit 1; }
+          go vet ./...
+          go test -race ./...
+      - name: The new chart test, verbose
+        run: go test -run 'TestChartProbesReadinessWithTheLivenessCheck' -v ./internal/chartcheck/
+      - name: Vet and test the processor SDK
+        run: cd pkg/processor && go vet ./... && go test -race ./...
+
+  docs-format:
+    name: Docs formatting (their job)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO }}
+          ref: ${{ env.REF }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check MDX formatting
+        run: |
+          version=$(node -p "require('./package-lock.json').packages['node_modules/prettier'].version")
+          npx --yes "prettier@$version" --check "docs-site/**/*.mdx"
+
+  readiness:
+    name: CNTi readiness on the branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.REPO }}
+          ref: ${{ env.REF }}
+          path: cnf/routr-pr/src
+          persist-credentials: false
+      - name: Chart at the alpha
+        run: |
+          sed -i 's/^appVersion: .*/appVersion: 3.0.0-alpha.6/' cnf/routr-pr/src/ops/charts/connect/Chart.yaml
+          grep -E '^(version|appVersion)' cnf/routr-pr/src/ops/charts/connect/Chart.yaml
+      - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
+        with:
+          version: v2.4.1
+          cnf_config: cnf/routr-pr/cnti-testsuite.yaml
+          install_timeout: 900
+          tests: readiness
+          fail_on_failure: "true"
