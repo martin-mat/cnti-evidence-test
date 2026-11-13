@@ -1,0 +1,10 @@
+# Routr Connect from the v3 branch with the proposed chart fixes (martin-mat/routr,
+# cnti-chart-fixes), but the bundled PostgreSQL left in the image's root group,
+# to show the result without that one change.
+config_version: "v2"
+deployments:
+  helm_dirs:
+    - name: routr
+      helm_directory: src/ops/charts/connect
+      helm_values: --set postgresql.primary.containerSecurityContext.runAsGroup=0
+      namespace: routr
