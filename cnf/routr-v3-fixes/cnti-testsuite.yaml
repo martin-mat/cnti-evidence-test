@@ -1,0 +1,8 @@
+# Routr Connect from the v3 branch with the proposed chart fixes (martin-mat/routr,
+# cnti-chart-fixes), with its vendored PostgreSQL and Redis subcharts.
+config_version: "v2"
+deployments:
+  helm_dirs:
+    - name: routr
+      helm_directory: src/ops/charts/connect
+      namespace: routr

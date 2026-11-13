@@ -10,6 +10,7 @@ name: Telco candidates measure
 on:
   push:
     branches: [telco-candidates-measure]
+    paths: [.github/workflows/telco-candidates-measure.yml, cnf/routr/**, cnf/sigscale-*/**]
   workflow_dispatch:
 permissions:
   contents: read
