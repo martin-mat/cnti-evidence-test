@@ -4,6 +4,8 @@
 # - routr-v3-alpha: the same chart at tag v3.0.0-alpha.6 (v3's head) with its
 #   appVersion set to the alpha, as the alpha charts are built, so every
 #   Routr image is the Go 3.0.0-alpha.6 one.
+# routr-v3-alpha runs on four workers: EdgePort is one replica per node by
+# design, so a drain and a scale to 4 need room (cnf/routr-v3-alpha/kind.yaml).
 # Storage that follows the pod, so node_drain can move the StatefulSets'
 # volumes: kind's local-path provisioner in shared mode.
 name: Routr v3 measure
@@ -26,9 +28,11 @@ jobs:
           - cnf: routr-v3
             ref: v3
             app_version: ""
+            kind: cnf/telco/kind.yaml
           - cnf: routr-v3-alpha
             ref: v3.0.0-alpha.6
             app_version: 3.0.0-alpha.6
+            kind: cnf/routr-v3-alpha/kind.yaml
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/kind-shared-storage
-          kind create cluster --name cnti-testsuite --config cnf/telco/kind.yaml
+          kind create cluster --name cnti-testsuite --config ${{ matrix.kind }}
           kubectl -n local-path-storage patch configmap local-path-config --type merge \
             -p '{"data":{"config.json":"{\"nodePathMap\":[],\"sharedFileSystemPath\":\"/var/local-path-provisioner\"}"}}'
           kubectl -n local-path-storage rollout restart deployment local-path-provisioner
