@@ -1,11 +1,10 @@
 # The CNTi essential tests on Routr 3's chart (fonoster/routr, branch v3) with
 # the proposed chart fixes (martin-mat/routr, branch cnti-chart-fixes, on v3):
 # readiness probes, memory requests and limits, a non-root group for the
-# bundled PostgreSQL (with writable directories) and Redis, and a fast
-# shutdown for PostgreSQL. The chart's appVersion is set to 3.0.0-alpha.6, as
+# bundled PostgreSQL (with writable directories) and Redis. The chart's appVersion is set to 3.0.0-alpha.6, as
 # the alpha charts are built, so every Routr image is the Go alpha.
-# - routr-v3-fixes: all the fixes;
-# - routr-v3-fixes-pg0: the same, PostgreSQL left in the image's root group.
+# routr-v3-fixes-pg0 (PostgreSQL left in the image's root group) gave 14/19 in
+# run 43518981095, next to 15/19 with all the fixes.
 # v3's chart on its own appVersion (2.32.2) does not install; alpha.6 without
 # the fixes gave 12/19 (runs 43508491774 and 43513420167).
 # Four workers: EdgePort is one replica per node by design, so a drain and a
@@ -30,11 +29,6 @@ jobs:
       matrix:
         include:
           - cnf: routr-v3-fixes
-            repo: martin-mat/routr
-            ref: cnti-chart-fixes
-            app_version: 3.0.0-alpha.6
-            kind: cnf/routr-v3-alpha/kind.yaml
-          - cnf: routr-v3-fixes-pg0
             repo: martin-mat/routr
             ref: cnti-chart-fixes
             app_version: 3.0.0-alpha.6
@@ -80,6 +74,13 @@ jobs:
             kubectl -n routr get "$p" -o jsonpath='{range .status.containerStatuses[*]}{.name} restarts={.restartCount} {.lastState}{"\n"}{end}'
           done
           kubectl -n routr get events --sort-by=.lastTimestamp | tail -30
+          # Memory working set per container after a minute idle, from the
+          # kubelet summary (no metrics-server), for sizing the requests and limits
+          sleep 60
+          for node in $(kubectl get nodes -o name | cut -d/ -f2); do
+            kubectl get --raw "/api/v1/nodes/$node/proxy/stats/summary" |
+              jq -r '.pods[] | select(.podRef.namespace=="routr") | .podRef.name as $p | .containers[] | "memory \($p) \(.name) \((.memory.workingSetBytes // 0) / 1048576 | floor)Mi"'
+          done
           helm uninstall routr -n routr --wait --timeout 3m
           kubectl delete namespace routr --wait --timeout 3m
 
