@@ -1,0 +1,15 @@
+---
+config_version: v2
+deployments:
+  helm_charts:
+    - name: cnpg-operator
+      helm_repo_name: cnpg
+      helm_repo_url: https://cloudnative-pg.github.io/charts
+      helm_chart_name: cloudnative-pg
+      chart_version: "0.29.1"
+      namespace: cnpg
+      priority: 1
+  manifests:
+    - name: postgres
+      manifest_directory: manifests
+      priority: 2

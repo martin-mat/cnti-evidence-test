@@ -1,0 +1,11 @@
+---
+config_version: "v2"
+deployments:
+  helm_charts:
+    - name: external-dns
+      helm_repo_name: external-dns
+      helm_repo_url: https://kubernetes-sigs.github.io/external-dns
+      helm_chart_name: external-dns
+      chart_version: "1.23.0"
+      namespace: external-dns-cnti
+      helm_values: --values cnf/external-dns/values.yaml

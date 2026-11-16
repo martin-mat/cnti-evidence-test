@@ -1,0 +1,36 @@
+# The campaign's "Ready" CNFs on the current releases (action v1.4.0, suite
+# v2.4.1), chart defaults plus only what an install needs (a ClusterIP
+# service, a provider, the collector's mode and image), each chart at its
+# newest release. otel-collector-nonroot: the same collector with a container
+# securityContext of runAsNonRoot and uid/gid 10001, to size that default.
+name: Ready CNFs on suite v2.4.1
+on:
+  workflow_dispatch:
+  push:
+    branches: [ready-v241]
+    paths: [.github/workflows/ready-v241.yml, cnf/**]
+permissions:
+  contents: read
+jobs:
+  cnf:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        name: [keda, strimzi, haproxy, traefik, external-dns, cloudnative-pg, otel-collector, otel-collector-nonroot]
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
+        with:
+          version: v2.4.1
+          cnf_config: cnf/${{ matrix.name }}/cnti-testsuite.yaml
+          tests: cert
+          install_timeout: "900"
+          fail_on_failure: "false"
+          artifact_name: results-${{ matrix.name }}
+      - name: Pods
+        if: always()
+        run: kubectl get pods -A -o wide || true
