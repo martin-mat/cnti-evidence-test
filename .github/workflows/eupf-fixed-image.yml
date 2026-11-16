@@ -1,0 +1,42 @@
+# eUPF main's chart defaults to appVersion 1.0.0-rc.1, whose image binds Sxa on
+# 127.0.0.2:8805 next to PFCP on :8805 and exits. eUPF #680 (62ee24af) made the
+# Sxa and Sxb addresses empty by default; the main build of that commit is
+# published as ghcr.io/edgecomllc/eupf:<full sha>. This runs eUPF's own CNTi
+# job (their kind and suite configuration, chart defaults) with only the
+# chart's appVersion set to that build.
+name: eUPF on the fixed image
+on:
+  workflow_dispatch:
+  push:
+    branches: [telco-candidates-measure]
+    paths: [.github/workflows/eupf-fixed-image.yml]
+permissions:
+  contents: read
+jobs:
+  essential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: edgecomllc/eupf
+          ref: 62ee24afc5e5535f38ea07a471f0aeb32351208e
+          persist-credentials: false
+      - name: Chart appVersion to the build of 62ee24af
+        run: |
+          sed -i 's/^appVersion: .*/appVersion: 62ee24afc5e5535f38ea07a471f0aeb32351208e/' .deploy/helm/eupf/Chart.yaml
+          grep appVersion .deploy/helm/eupf/Chart.yaml
+          helm template eupf .deploy/helm/eupf | grep 'image:' | sort -u
+      - uses: lfn-cnti/testsuite-action@3c0e163cbbdde302cdd9abb9dbe8c2cbd6a72c71 # v1.4.0
+        with:
+          version: v2.4.1
+          cnf_config: .github/cnti/cnti-testsuite.yaml
+          kind_config: .github/cnti/kind.yaml
+          tests: cert
+      - name: Diagnostics
+        if: always()
+        run: |
+          set +e
+          kubectl get pods -A -o wide
+          kubectl describe pods -n eupf | tail -60
+          kubectl logs -n eupf --all-containers --tail=60 -l app.kubernetes.io/name=eupf
